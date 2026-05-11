@@ -386,9 +386,9 @@ def analyze_scenes_strategy(video_path, scenes):
     for start, end in tqdm(scenes, desc="   Analyzing Scenes"):
         # Sample 3 frames (start, middle, end)
         frames_to_check = [
-            start.get_frames() + 5,
-            int((start.get_frames() + end.get_frames()) / 2),
-            end.get_frames() - 5
+            start.frame_num + 5,
+            int((start.frame_num + end.frame_num) / 2),
+            end.frame_num - 5
         ]
         
         face_counts = []
@@ -584,7 +584,7 @@ def process_video_to_vertical(input_video, final_output_video):
     # Define temporary file paths based on the output name
     base_name = os.path.splitext(final_output_video)[0]
     temp_video_output = f"{base_name}_temp_video.mp4"
-    temp_audio_output = f"{base_name}_temp_audio.aac"
+    temp_audio_output = f"{base_name}_temp_audio.m4a"
     
     # Clean up previous temp files if they exist
     if os.path.exists(temp_video_output): os.remove(temp_video_output)
@@ -610,6 +610,8 @@ def process_video_to_vertical(input_video, final_output_video):
     original_width, original_height = get_video_resolution(input_video)
     
     OUTPUT_HEIGHT = original_height
+    if OUTPUT_HEIGHT % 2 != 0:
+        OUTPUT_HEIGHT += 1
     OUTPUT_WIDTH = int(OUTPUT_HEIGHT * ASPECT_RATIO)
     if OUTPUT_WIDTH % 2 != 0:
         OUTPUT_WIDTH += 1
@@ -628,7 +630,10 @@ def process_video_to_vertical(input_video, final_output_video):
         'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo',
         '-s', f'{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}', '-pix_fmt', 'bgr24',
         '-r', str(fps), '-i', '-', '-c:v', 'libx264',
-        '-preset', 'fast', '-crf', '23', '-an', temp_video_output
+        '-pix_fmt', 'yuv420p',
+        '-preset', 'fast', '-crf', '23', '-an',
+        '-movflags', '+faststart',
+        temp_video_output
     ]
 
     ffmpeg_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -642,7 +647,7 @@ def process_video_to_vertical(input_video, final_output_video):
     # Pre-calculate scene boundaries
     scene_boundaries = []
     for s_start, s_end in scenes:
-        scene_boundaries.append((s_start.get_frames(), s_end.get_frames()))
+        scene_boundaries.append((s_start.frame_num, s_end.frame_num))
 
     # Global tracker for single-person shots
     speaker_tracker = SpeakerTracker(cooldown_frames=30)
@@ -713,7 +718,7 @@ def process_video_to_vertical(input_video, final_output_video):
 
     print("\n   🔊 Step 5: Extracting audio...")
     audio_extract_command = [
-        'ffmpeg', '-y', '-i', input_video, '-vn', '-acodec', 'copy', temp_audio_output
+        'ffmpeg', '-y', '-i', input_video, '-vn', '-c:a', 'aac', '-b:a', '192k', temp_audio_output
     ]
     try:
         subprocess.run(audio_extract_command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -722,15 +727,20 @@ def process_video_to_vertical(input_video, final_output_video):
         pass
 
     print("\n   ✨ Step 6: Merging...")
-    if os.path.exists(temp_audio_output):
+    if os.path.exists(temp_audio_output) and os.path.getsize(temp_audio_output) > 0:
         merge_command = [
             'ffmpeg', '-y', '-i', temp_video_output, '-i', temp_audio_output,
-            '-c:v', 'copy', '-c:a', 'copy', final_output_video
+            '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+            '-movflags', '+faststart',
+            '-shortest',
+            final_output_video
         ]
     else:
          merge_command = [
             'ffmpeg', '-y', '-i', temp_video_output,
-            '-c:v', 'copy', final_output_video
+            '-c:v', 'copy',
+            '-movflags', '+faststart',
+            final_output_video
         ]
         
     try:
@@ -988,12 +998,14 @@ if __name__ == '__main__':
                 # ffmpeg cut
                 # Using re-encoding for precision as requested by strict seconds
                 cut_command = [
-                    'ffmpeg', '-y', 
-                    '-ss', str(start), 
-                    '-to', str(end), 
+                    'ffmpeg', '-y',
                     '-i', input_video,
+                    '-ss', str(start),
+                    '-to', str(end),
                     '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
-                    '-c:a', 'aac',
+                    '-pix_fmt', 'yuv420p',
+                    '-c:a', 'aac', '-b:a', '192k',
+                    '-movflags', '+faststart',
                     clip_temp_path
                 ]
                 subprocess.run(cut_command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
