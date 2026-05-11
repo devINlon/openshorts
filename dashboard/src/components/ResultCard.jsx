@@ -336,6 +336,21 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
         setPostResult(null);
 
         try {
+            // If the current video is a blob (Remotion-rendered), upload it to server first
+            if (currentVideoUrl && currentVideoUrl.startsWith('blob:')) {
+                const blobRes = await fetch(currentVideoUrl);
+                const blob = await blobRes.blob();
+                const formData = new FormData();
+                formData.append('video', blob, `rendered_${index}.mp4`);
+                formData.append('job_id', jobId);
+                formData.append('clip_index', index);
+                const uploadRes = await fetch(getApiUrl('/api/upload-rendered'), {
+                    method: 'POST',
+                    body: formData
+                });
+                if (!uploadRes.ok) throw new Error('Failed to upload rendered video');
+            }
+
             const payload = {
                 job_id: jobId,
                 clip_index: index,

@@ -186,6 +186,11 @@ THUMBNAILS_DIR = os.path.join(OUTPUT_DIR, "thumbnails")
 os.makedirs(THUMBNAILS_DIR, exist_ok=True)
 app.mount("/thumbnails", StaticFiles(directory=THUMBNAILS_DIR), name="thumbnails")
 
+# Serve frontend SPA from /static if it exists
+STATIC_DIR = os.path.join(os.path.dirname(__file__) or ".", "static")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="frontend_assets")
+
 class ProcessRequest(BaseModel):
     url: str
 
@@ -1040,6 +1045,52 @@ async def translate_clip(
         "success": True,
         "new_video_url": f"/videos/{req.job_id}/{output_filename}"
     }
+
+@app.post("/api/upload-rendered")
+async def upload_rendered_video(
+    video: UploadFile = File(...),
+    job_id: str = Form(...),
+    clip_index: int = Form(...)
+):
+    """Upload a browser-rendered video (e.g. Remotion) to replace the current clip."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = jobs[job_id]
+    output_dir = os.path.join(OUTPUT_DIR, job_id)
+    os.makedirs(output_dir, exist_ok=True)
+
+    filename = f"rendered_{clip_index}_{int(time.time())}.mp4"
+    file_path = os.path.join(output_dir, filename)
+
+    with open(file_path, "wb") as f:
+        content = await video.read()
+        f.write(content)
+
+    new_url = f"/videos/{job_id}/{filename}"
+
+    # Update in-memory job
+    if 'result' in job and 'clips' in job['result']:
+        if clip_index < len(job['result']['clips']):
+            job['result']['clips'][clip_index]['video_url'] = new_url
+
+    # Update metadata on disk
+    json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
+    if json_files:
+        try:
+            with open(json_files[0], 'r') as f:
+                data = json.load(f)
+            clips = data.get('shorts', [])
+            if clip_index < len(clips):
+                clips[clip_index]['video_url'] = new_url
+                data['shorts'] = clips
+                with open(json_files[0], 'w') as f:
+                    json.dump(data, f, indent=4)
+                print(f"✅ Metadata updated with rendered video for clip {clip_index}")
+        except Exception as e:
+            print(f"⚠️ Failed to update metadata.json: {e}")
+
+    return {"success": True, "new_video_url": new_url}
 
 class SocialPostRequest(BaseModel):
     job_id: str
@@ -2254,3 +2305,16 @@ async def saasshorts_voices(
         ],
         "source": "defaults",
     }
+
+# --- SPA catch-all: serve index.html for any non-API route ---
+if os.path.isdir(STATIC_DIR):
+    from fastapi.responses import FileResponse
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # Serve static files directly if they exist
+        file_path = os.path.join(STATIC_DIR, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        # Otherwise serve index.html for SPA routing
+        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
